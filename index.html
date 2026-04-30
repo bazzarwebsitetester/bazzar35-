@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>AI Bazaar Trading Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body{margin:0;font-family:Arial;background:#0b0f14;color:#e6e6e6}
+.header{padding:12px;background:#111827;border-bottom:1px solid #222}
+.container{display:grid;grid-template-columns:260px 1fr;height:100vh}
+.sidebar{background:#0f172a;padding:10px;border-right:1px solid #222}
+.main{padding:12px}
+
+select{width:100%;padding:8px;margin-bottom:10px;background:#111827;color:white;border:none}
+
+.toggle{background:#111827;padding:8px;border:1px solid #333;cursor:pointer;margin-bottom:10px}
+
+.kpis{display:flex;gap:10px;margin-bottom:10px}
+.card{flex:1;background:#111827;padding:10px;border-radius:6px}
+
+table{width:100%;border-collapse:collapse}
+th,td{padding:6px;border-bottom:1px solid #222;text-align:center}
+th{background:#111827}
+
+canvas{background:#0f172a;margin-top:10px;padding:10px;border-radius:8px}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+<h2>🤖 AI Bazaar Trading Dashboard</h2>
+<span id="status">Loading...</span>
+</div>
+
+<div class="container">
+
+<div class="sidebar">
+<div class="toggle" onclick="toggleManipulation()">
+🧠 Manipulation: <span id="manState">ON</span>
+</div>
+
+<select id="itemSelect" onchange="drawChart()"></select>
+</div>
+
+<div class="main">
+
+<div class="kpis">
+<div class="card"><h4>🔥 Best PPH</h4><p id="bestPH">-</p></div>
+<div class="card"><h4>📊 Items</h4><p id="itemCount">0</p></div>
+</div>
+
+<table id="table"></table>
+<canvas id="chart" height="120"></canvas>
+
+</div>
+</div>
+
+<script>
+
+const TAX = 0.01125;
+let showManipulation = true;
+let allItems = [];
+let chart = null;
+
+/* TOGGLE */
+function toggleManipulation(){
+    showManipulation = !showManipulation;
+    document.getElementById("manState").innerText =
+        showManipulation ? "ON" : "OFF";
+}
+
+/* HISTORY */
+function saveHistory(item, price){
+    if(!item || !price) return;
+
+    let h = JSON.parse(localStorage.getItem(item) || "[]");
+    h.push({time:Date.now(), price});
+
+    if(h.length > 200) h.shift();
+
+    localStorage.setItem(item, JSON.stringify(h));
+}
+
+function getHistory(item){
+    return JSON.parse(localStorage.getItem(item) || "[]");
+}
+
+/* SAFE MATH */
+function regression(h){
+    if(!h || h.length < 10) return null;
+
+    let n=h.length,sx=0,sy=0,sxy=0,sxx=0;
+
+    for(let i=0;i<n;i++){
+        sx+=i;
+        sy+=h[i].price;
+        sxy+=i*h[i].price;
+        sxx+=i*i;
+    }
+
+    let d=n*sxx - sx*sx;
+    if(d===0) return null;
+
+    let slope=(n*sxy - sx*sy)/d;
+    let b=(sy - slope*sx)/n;
+
+    return slope*n + b;
+}
+
+function trend(h){
+    if(!h || h.length < 50) return "STABLE";
+
+    let s=regression(h.slice(-10));
+    let l=regression(h.slice(-50));
+
+    if(!s || !l) return "STABLE";
+
+    if(s>l*1.01) return "UP";
+    if(s<l*0.99) return "DOWN";
+    return "STABLE";
+}
+
+function pump(h){
+    if(!h || h.length === 0) return false;
+
+    let avg = h.reduce((a,b)=>a+b.price,0)/h.length;
+    return h[h.length-1].price > avg*1.25;
+}
+
+/* MARKET INTEL */
+function cycle(h){
+    if(!h || h.length < 30) return "MID";
+
+    let prices = h.map(x=>x.price);
+    let min = Math.min(...prices);
+    let max = Math.max(...prices);
+
+    if(max - min === 0) return "MID";
+
+    let pos = (prices[prices.length-1] - min)/(max-min);
+
+    if(pos < 0.25) return "BOTTOM";
+    if(pos > 0.75) return "TOP";
+    return "MID";
+}
+
+function spread(h){
+    if(!h || h.length < 20) return false;
+
+    let r=h.slice(-10).map(x=>x.price);
+    let o=h.slice(-20,-10).map(x=>x.price);
+
+    let ra=r.reduce((a,b)=>a+b,0)/r.length;
+    let oa=o.reduce((a,b)=>a+b,0)/o.length;
+
+    return ra < oa * 0.98;
+}
+
+/* LIQUIDITY */
+function hourlyVol(s){
+    if(!s || !s.sellMovingWeek) return 0;
+    return s.sellMovingWeek / 168;
+}
+
+function truePPH(buy,sell,s){
+    let profit=(sell-buy)-(sell*TAX);
+    if(profit <= 0) return 0;
+
+    return profit * hourlyVol(s);
+}
+
+/* SIGNALS */
+function buySig(roi,h){
+    if(!h || h.length < 20) return "WAIT";
+
+    if(pump(h)) return "❌ MANIP";
+
+    let c = h[h.length-1].price;
+    let p = regression(h);
+
+    if(cycle(h)==="BOTTOM") return "🟢 BUY";
+    if(p && p > c*1.02) return "🟢 EARLY";
+
+    return "❌ AVOID";
+}
+
+function sellSig(roi,h){
+    if(!h || h.length < 20) return "HOLD";
+
+    if(roi > 10) return "💰 PROFIT";
+    if(cycle(h)==="TOP") return "📈 TOP";
+    if(trend(h)==="DOWN") return "📉 EXIT";
+    if(spread(h)) return "⚠ SPREAD";
+
+    return "HOLD";
+}
+
+/* LOAD */
+async function load(){
+
+    try{
+        let res = await fetch("https://api.hypixel.net/skyblock/bazaar");
+
+        if(!res.ok){
+            document.getElementById("status").innerText="⚠ API DOWN";
+            return;
+        }
+
+        let data = await res.json();
+
+        if(!data || !data.products){
+            document.getElementById("status").innerText="⚠ BAD DATA";
+            return;
+        }
+
+        let items=[];
+
+        for(let id in data.products){
+
+            let s=data.products[id].quick_status;
+            if(!s || s.sellMovingWeek < 100000) continue;
+
+            let buy=s.sellPrice;
+            let sell=s.buyPrice;
+
+            if(!buy || !sell) continue;
+
+            let profit=(sell-buy)-(sell*TAX);
+            let roi=(profit/buy)*100;
+
+            let name=id.replaceAll("_"," ");
+
+            saveHistory(name,buy);
+            let h=getHistory(name);
+
+            if(!h || h.length < 10) continue;
+
+            let b=buySig(roi,h);
+            let se=sellSig(roi,h);
+
+            if(!showManipulation && b.includes("MANIP")) continue;
+
+            items.push({
+                name,
+                price:buy,
+                roi,
+                buy:b,
+                sell:se,
+                pph:truePPH(buy,sell,s)
+            });
+        }
+
+        if(items.length === 0){
+            document.getElementById("status").innerText="⚠ NO DATA";
+            return;
+        }
+
+        items.sort((a,b)=>b.pph-a.pph);
+        items = items.slice(0,10);
+
+        allItems = items;
+
+        render(items);
+        fillSelector(items);
+
+        document.getElementById("status").innerText="🟢 LIVE";
+
+    }catch(e){
+        console.error(e);
+        document.getElementById("status").innerText="⚠ ERROR";
+    }
+}
+
+/* RENDER */
+function render(items){
+
+    let table=document.getElementById("table");
+
+    table.innerHTML=`
+    <tr>
+    <th>Item</th><th>Price</th><th>ROI</th>
+    <th>PPH</th><th>Buy</th><th>Sell</th>
+    </tr>`;
+
+    document.getElementById("bestPH").innerText =
+        items[0]?.pph.toFixed(0) || "-";
+
+    document.getElementById("itemCount").innerText = items.length;
+
+    items.forEach(i=>{
+        table.innerHTML+=`
+        <tr>
+        <td>${i.name}</td>
+        <td>${i.price.toFixed(1)}</td>
+        <td>${i.roi.toFixed(2)}</td>
+        <td>${i.pph.toFixed(0)}</td>
+        <td>${i.buy}</td>
+        <td>${i.sell}</td>
+        </tr>`;
+    });
+}
+
+/* SELECTOR */
+function fillSelector(items){
+    let sel = document.getElementById("itemSelect");
+    sel.innerHTML="";
+
+    items.forEach(i=>{
+        let o=document.createElement("option");
+        o.value=i.name;
+        o.text=i.name;
+        sel.appendChild(o);
+    });
+
+    drawChart();
+}
+
+/* CHART */
+function drawChart(){
+
+    let item=document.getElementById("itemSelect").value;
+    let h=getHistory(item);
+
+    if(!h || h.length === 0) return;
+
+    let labels=h.map(x=>new Date(x.time).toLocaleTimeString());
+    let data=h.map(x=>x.price);
+
+    if(chart) chart.destroy();
+
+    chart=new Chart(document.getElementById("chart"),{
+        type:"line",
+        data:{
+            labels,
+            datasets:[{
+                label:item,
+                data,
+                borderColor:"#22c55e"
+            }]
+        }
+    });
+}
+
+/* LOOP */
+async function loop(){
+    await load();
+    setTimeout(loop,5000);
+}
+
+loop();
+
+</script>
+</body>
+</html>
