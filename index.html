@@ -37,11 +37,11 @@ canvas{background:#0f172a;margin-top:10px;padding:10px;border-radius:8px}
 <div class="container">
 
 <div class="sidebar">
-<div class="toggle" onclick="toggleManipulation()">
+<div class="toggle" id="toggleBtn">
 🧠 Manipulation: <span id="manState">ON</span>
 </div>
 
-<select id="itemSelect" onchange="drawChart()"></select>
+<select id="itemSelect"></select>
 </div>
 
 <div class="main">
@@ -58,12 +58,13 @@ canvas{background:#0f172a;margin-top:10px;padding:10px;border-radius:8px}
 </tr>
 </table>
 
-<canvas id="chart" height="120"></canvas>
+<canvas id="chartCanvas" height="120"></canvas>
 
 </div>
 </div>
 
 <script>
+document.addEventListener("DOMContentLoaded", () => {
 
 const TAX = 0.01125;
 
@@ -71,14 +72,23 @@ let showManipulation = true;
 let chart = null;
 
 let tableRows = {};
-let lastSignals = {}; // 🧠 track signal changes
+let lastSignals = {};
 let currentSelected = null;
 
+/* DOM refs */
+const manState = document.getElementById("manState");
+const itemSelect = document.getElementById("itemSelect");
+const bestPH = document.getElementById("bestPH");
+const itemCount = document.getElementById("itemCount");
+const status = document.getElementById("status");
+const chartCanvas = document.getElementById("chartCanvas");
+const table = document.getElementById("table");
+
 /* TOGGLE */
-function toggleManipulation(){
+document.getElementById("toggleBtn").onclick = () => {
     showManipulation = !showManipulation;
     manState.innerText = showManipulation ? "ON":"OFF";
-}
+};
 
 /* HISTORY */
 function saveHistory(item, price){
@@ -91,7 +101,7 @@ function getHistory(item){
     return JSON.parse(localStorage.getItem(item)||"[]");
 }
 
-/* SAFE MATH */
+/* MATH */
 function regression(h){
     if(!h || h.length < 10) return null;
     let n=h.length,sx=0,sy=0,sxy=0,sxx=0;
@@ -122,13 +132,11 @@ function pump(h){
     return h[h.length-1].price > avg*1.25;
 }
 
-/* MARKET INTEL */
 function cycle(h){
     if(!h || h.length < 30) return "MID";
     let p=h.map(x=>x.price);
     let min=Math.min(...p),max=Math.max(...p);
-    if(max-min===0) return "MID";
-    let pos=(p[p.length-1]-min)/(max-min);
+    let pos=(p[p.length-1]-min)/(max-min || 1);
     if(pos<0.25) return "BOTTOM";
     if(pos>0.75) return "TOP";
     return "MID";
@@ -143,14 +151,12 @@ function spread(h){
     return ra < oa * 0.98;
 }
 
-/* LIQUIDITY */
 function hourlyVol(s){ return s.sellMovingWeek/168; }
 function truePPH(buy,sell,s){
     let profit=(sell-buy)-(sell*TAX);
     return profit>0 ? profit*hourlyVol(s) : 0;
 }
 
-/* SIGNALS */
 function buySig(roi,h){
     if(!h || h.length < 20) return "WAIT";
     if(pump(h)) return "❌ MANIP";
@@ -170,22 +176,19 @@ function sellSig(roi,h){
     return "HOLD";
 }
 
-/* UPDATE ROW + DETECT CHANGES */
+/* TABLE */
 function updateRow(item){
-
     if(!tableRows[item.name]){
         let tr=document.createElement("tr");
         tr.innerHTML=`<td></td><td></td><td></td><td></td><td></td><td></td>`;
         tableRows[item.name]=tr;
-        document.getElementById("table").appendChild(tr);
+        table.appendChild(tr);
     }
 
     let tr=tableRows[item.name];
     let cells=tr.children;
 
     let prev = lastSignals[item.name] || {};
-
-    // 🧠 detect change
     if(prev.buy !== item.buy || prev.sell !== item.sell){
         tr.classList.add("highlight");
         setTimeout(()=>tr.classList.remove("highlight"),1000);
@@ -201,27 +204,21 @@ function updateRow(item){
     cells[5].innerText=item.sell;
 }
 
-/* LIVE SORT (NO REBUILD) */
 function sortTable(items){
-    let table=document.getElementById("table");
-
     items.forEach(i=>{
         let row=tableRows[i.name];
-        if(row) table.appendChild(row); // moves row
+        if(row) table.appendChild(row);
     });
 }
 
-/* SELECTOR */
 function updateSelector(items){
     if(itemSelect.options.length>0) return;
-
     items.forEach(i=>{
         let o=document.createElement("option");
         o.value=i.name;
         o.text=i.name;
         itemSelect.appendChild(o);
     });
-
     currentSelected = items[0]?.name;
     itemSelect.value=currentSelected;
 }
@@ -246,6 +243,8 @@ function drawChart(){
         chart.update();
     }
 }
+
+itemSelect.onchange = drawChart;
 
 /* LOAD */
 async function load(){
@@ -302,9 +301,11 @@ async function load(){
     }
 }
 
-/* LOOP */
 setInterval(load,5000);
+load();
 
+});
 </script>
+
 </body>
 </html>
